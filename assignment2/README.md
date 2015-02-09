@@ -7,7 +7,7 @@ Leadaer communicates with follower through RPC.
 
 # Files
 
-	This assignment contaians 2 files(main & test file) and 2 library files
+This assignment contaians 2 files(main & test file) and 2 library files
 
 # Description
 
