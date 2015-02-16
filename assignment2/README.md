@@ -1,33 +1,43 @@
 # RAFT
 
- This is the Second assignment of course CS733: Advanced Distributed Computing - Engineering a Cloud. 
-The perpose this assignment is to understand and implement the functionalities of Leader in RAFT protocol.
-We have built a set of Severs(n). One of them is made Leader, who communicates with client over TCP. 
-Leadaer communicates with follower through RPC. 	
+This is the Second assignment of course CS733: Advanced Distributed Computing - Engineering a Cloud. 
+The purpose of this assignment is to understand and implement the functionalities of the Leader in RAFT protocol.
+We have a set of servers. One of them is made the leader, which communicates with the clients over TCP. 
+Leader communicates with the followers through RPC. 	
 
 # Files
 
-This assignment contaians 2 files(main & test file) and 2 library files
+This assignment contains 2 files (main & test file) and 2 library files
 
 # Description
 
- Client can send request to any runnig server. If server is follower it sends ERR_REDIRECT message along with host name 
-and port number of Leader server. With this information Client make TCP connection with Leader. Once connection is established
-client can send command to Leader,who accept it,processes it and makes entry into his shared log. Now leader send this data to all
-follower through RPC to add it in their corresponding shared log. After sending RPC to all follower, leader commits the entry.
+Client can send request to any running server. If server is follower it sends `ERR_REDIRECT` message along with host name 
+and port number of the leader. With this information the client can make TCP connection with it. If the server is the leader, it accepts the command, checks if it is not a read request and add it to it shared log.
+It then updates the shared log of the other servers via RPC call, after which it commits immediately.
 
-Following is the description of implemented functions in programme 
+The servers can be executed in any order. One will wait for the other to spawn and then connect. The `main()` creates a new `Raft` object initializing it with all the server details.
 
- - `func Init`: It initialises server,i.e. starts four functions AcceptConnection,ClientListener,Evaluator,DataWriter.
- - `func AcceptConnection`: accepts an incoming connection request at port 9000.It spawns three types goroutines to process the command
- - `func ClientListener`: It is used to take input request from a client. Hence, it is spawned for every client whenever a connection is made.
+Following is the description of implemented functions in program
+
+ - `func Init`: It initializes the server, i.e. starts threads for different purposes.
+ - `func AcceptConnection`: It accepts an incoming TCP connection request at port 9000 (leader), and spawn handler `ClientListener` for that client.
+ - `func ClientListener`: It is used to take input request from a client.
  - `func Evaluator`: It reads from the input channel `input_ch`, processes the request and sends the reply to the output channel `output_ch`.
  - `func DataWriter`: It reads from the output channel `output_ch`, and sends the output to the respective client (if required).
- - `func ConnectToServers`: This function is executed if server leader and connect all other sever.
- - `func AcceptRPC`: This function is executed if server is follower and establishes RPC connection with each other.
- - `func Append`: This appends data in shared log
- - `func Commit`: Makes the data entry into KVStore
+ - `func ConnectToServers`: It is executed to connect each server to every other server.
+ - `func AcceptRPC`: Similar to `AcceptConnection`, this function accepts RPC connection request at port 9001 (leader).
+ - `func Append`: This appends data in shared log.
+ - `func Commit`: Runs the command and commits to the KVStore.
 
 # Usage
 
-
+In our case, running the server is somewhat a manual process.
+ - Go to the `assignment2` directory
+ - Set the environment variable `GOPATH` as the path to the `assignment2` directory.
+ - In `program.go`, set the variable `N` to be the number of servers you are going to spawn.
+ - Now spawn the servers as `go run program.go <id>`. The server with `id = 0` is the leader. Hostname and port numbers of the servers are decided based on this.
+ <br/> We tried to automate this process but the program didn't work.
+ - Type `go test` to run the test cases.
+ 
+ 
+ 
