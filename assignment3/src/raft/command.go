@@ -5,7 +5,7 @@ import(
 	"time"
 	"net"
 	"strconv"
-//	"log"
+	//~ "log"
 )
 
 // Executes the set command
@@ -167,7 +167,9 @@ func (r *RaftServer) DataWriter() {
 		text := replych.Text
 		conn := replych.Conn		// nil for followers as they don't have to send the reply back
 		if text != "" && conn != nil {
+			//~ log.Print("[Server", r.id, "] response:", text)
 			conn.Write([]byte(text))
+
 		}
 	}
 }
