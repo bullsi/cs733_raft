@@ -40,6 +40,7 @@ func main() {
 			Client: nil,
 			LsnToCommit: 0,
 		}
+		
 		cConfig := raft.ClusterConfig{"undefined path", -1, sConfigs}		// -1 for no leader
 		commitCh := make(chan raft.LogEntry,100)
 		r, _ := NewRaft(N, &cConfig, i, commitCh)

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"time"
+	//~ "time"
 	"testing"
-	"strconv"
+	//~ "strconv"
 )
 
 func TestMain(t *testing.T) {
@@ -41,6 +41,7 @@ func SpawnClient(t *testing.T, id int, testCases []TestCase) {
 	for i:=0; i<len(testCases); i++ {
 		// Now send data
 		input := testCases[i].input
+
 		exp_output := testCases[i].output
 		expectReply := testCases[i].expectReply
 
@@ -99,35 +100,35 @@ func TestCase1(t *testing.T) {
 	ClientSpawner(t, testCases, n)
 	
 	// ---------- get theta after its expiration --------------
-	time.Sleep(10 * time.Second)
-	testCases = []TestCase {
-		{"get theta\r\n", "ERR_NOT_FOUND\r\n", true},
-	}
-	ClientSpawner(t, testCases, 1)
+	//~ time.Sleep(10 * time.Second)
+	//~ testCases = []TestCase {
+		//~ {"get theta\r\n", "ERR_NOT_FOUND\r\n", true},
+	//~ }
+	//~ ClientSpawner(t, testCases, 1)
 
-	// ---------- get broken into different packets -----------
-	testCases = []TestCase {
-		{"get alpha\r\n", "VALUE 10\r\nI am ALPHA\r\n", true},
-		{"ge", "", false},
-		{"t al", "", false},
-		{"pha\r\n", "VALUE 10\r\nI am ALPHA\r\n", true},
-		{"get b", "", false},
-		{"eta\r\n", "VALUE 9\r\nI am BETA\r\n", true},
-	}
-	ClientSpawner(t, testCases, n)
-
-	// ---------- cas command --------------------------------
-	testCases = []TestCase {
-		{"cas gamma 40 "+strconv.Itoa(n)+" 13\r\nI am BETA now\r\n", "OK "+strconv.Itoa(n+1)+"\r\n", true},
-	}
-	ClientSpawner(t, testCases, 1)	
-	
-	// ---------- get the changed value -----------------------
-	testCases = []TestCase {
-		{"get gamma\r\n", "VALUE 13\r\nI am BETA now\r\n", true},
-		{"getm gamma\r\n", "VALUE "+strconv.Itoa(n+1), true},
-	}
-	ClientSpawner(t, testCases, n)
+	//~ // ---------- get broken into different packets -----------
+	//~ testCases = []TestCase {
+		//~ {"get alpha\r\n", "VALUE 10\r\nI am ALPHA\r\n", true},
+		//~ {"ge", "", false},
+		//~ {"t al", "", false},
+		//~ {"pha\r\n", "VALUE 10\r\nI am ALPHA\r\n", true},
+		//~ {"get b", "", false},
+		//~ {"eta\r\n", "VALUE 9\r\nI am BETA\r\n", true},
+	//~ }
+	//~ ClientSpawner(t, testCases, n)
+//~ 
+	//~ // ---------- cas command --------------------------------
+	//~ testCases = []TestCase {
+		//~ {"cas gamma 40 "+strconv.Itoa(n)+" 13\r\nI am BETA now\r\n", "OK "+strconv.Itoa(n+1)+"\r\n", true},
+	//~ }
+	//~ ClientSpawner(t, testCases, 1)	
+	//~ 
+	//~ // ---------- get the changed value -----------------------
+	//~ testCases = []TestCase {
+		//~ {"get gamma\r\n", "VALUE 13\r\nI am BETA now\r\n", true},
+		//~ {"getm gamma\r\n", "VALUE "+strconv.Itoa(n+1), true},
+	//~ }
+	//~ ClientSpawner(t, testCases, n)
 }
 
 /*
