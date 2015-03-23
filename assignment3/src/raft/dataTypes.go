@@ -1,5 +1,6 @@
 package raft
 import (
+		"fmt"
 		"time"
 		"net"
 		"log"
@@ -14,7 +15,7 @@ func Trim(input []byte) []byte {
 	return input[0:i]
 }
 
-type Lsn uint64 //Log sequence number, unique for all time.
+type Lsn int64 //Log sequence number, unique for all time.
 const (
 	Follower = 0
 	Candidate = 1
@@ -29,8 +30,16 @@ type Value struct {
 	Version			int64
 }
 type String_Conn struct {
-	Text string
-	Conn net.Conn
+	Text 		string
+	Conn		net.Conn
+}
+type LogEntry_Conn struct {
+	Entry		LogEntry
+	Conn		net.Conn
+}
+type Lsn_Conn struct {
+	SequenceNumber	Lsn
+	Conn			net.Conn
 }
 type ServerConfig struct {
 	Id int	 				// Id of server. Must be unique
@@ -38,7 +47,8 @@ type ServerConfig struct {
 	ClientPort int 			// port at which server listens to client messages.
 	LogPort int 			// tcp port for inter-replica protocol messages.
 	Client *rpc.Client		// Connection object for the server
-	LsnToCommit Lsn			// Sequence Number of the last committed log entry
+	LsnToCommit Lsn			// Sequence Number of the log entry to be committed next
+	NextIndex Lsn			// Log index of the next entry to be sent to the follower
 }
 type ClusterConfig struct {
 	Path string				// Directory for persistent log
@@ -57,21 +67,15 @@ type VoteReturn struct {
 	IsVoted bool
 }
 type AppendRequest struct {
-	Id int
-	Entry LogEntry
+	Id				int
+	Entry			LogEntry
+	PrevTerm		int
 }
-
-// ------------------ RPC ------------------
-//~ type RPC struct {
-//~ }
-//~ type AppendRPCArgs struct {
-	//~ Id int
-	//~ Entry LogEntry
-//~ }
-//~ type CommitRPCArgs struct {
-	//~ Id int
-	//~ Sequencenumber Lsn
-//~ }
+type AppendResponse struct {
+	HasAccepted		bool			// if the follower has accepted the packet
+	SequenceNumber	Lsn				// the sequence number of log entry sent by the server (needed, to know the log entry to which this is the response)
+	Term			int				// follower's current term (to update the server, in case it is at a previous term)
+}
 
 // ----------------- RaftServer ------------------
 type RaftServer struct {
@@ -90,16 +94,16 @@ type RaftServer struct {
 	
 	// --- Append Log details ----
 	AppendInput_ch 	chan AppendRequest			// if the leader wants a follower to add a log, it append the entry to its this channel
-	AppendOutput_ch	chan string				// response from the receiver
+	AppendOutput_ch	chan AppendResponse			// response from the receiver
 	CommitInput_ch	chan Lsn
 	CommitOutput_ch	chan string
 	
 	
 	clusterConfig 	*ClusterConfig
 	KVStore 		map[string]Value
+	Append_ch 		chan LogEntry_Conn
+	Commit_ch 		chan Lsn_Conn
 	Input_ch 		chan String_Conn
-	Append_ch 		chan LogEntry
-	Commit_ch 		chan Lsn
 	Output_ch 		chan String_Conn
 }
 
@@ -112,7 +116,10 @@ func (r *RaftServer) AppendCaller() {
 		for i:=0; i<len(r.clusterConfig.Servers); i++ {
 			if i == r.id { continue }
 			rserv := AllServers[i]
-			rserv.AppendInput_ch <- AppendRequest{r.id, logentry}		// r.id is the sender's id
+			
+			prevterm := -1
+			if logentry.Entry.SequenceNumber > 0 { prevterm = r.log.Entries[logentry.Entry.SequenceNumber - 1].Term }
+			rserv.AppendInput_ch <- AppendRequest{r.id, logentry.Entry, prevterm}
 		}
 		// Receives the response from everyone concurrently with a timeout
 		totalAcks := 0
@@ -121,15 +128,24 @@ func (r *RaftServer) AppendCaller() {
 		for i:=0; i<len(r.clusterConfig.Servers); i++ {
 			if i == r.id { continue }
 			go func(id int) {
-				var reply string
 				rserv := AllServers[id]
 				select {
-					case reply = <-rserv.AppendOutput_ch:
+					case reply := <-rserv.AppendOutput_ch:
+						if reply.HasAccepted == false {
+							// not appended
+							// decrease NextIndex for id'th server
+							r.clusterConfig.Servers[id].NextIndex = reply.SequenceNumber - 1
+							index := r.clusterConfig.Servers[id].NextIndex
+							logentry_ := r.log.Entries[index]
+							prevterm := -1										// term of the previous log entry
+							if index>0 { prevterm = r.log.Entries[index-1].Term }
+							// send NextIndex'th log entry
+							rserv.AppendInput_ch <- AppendRequest{r.id, logentry_, prevterm}
+						}
 						totalAcks++
+						log.Print("[Server", r.id, "] Received HasAccepted:", reply.HasAccepted, " Lsn:", reply.SequenceNumber, " Term:", reply.Term, " from leader")
 					case <-time.After(1000 * time.Millisecond):
-						reply = "TIMEOUT"
 				}
-				log.Printf("[Server%d %d] %s from %d at port %d", r.id, r.state, reply, id, r.clusterConfig.Servers[id].LogPort)
 				funcRem <- true
 			}(i)
 		}
@@ -137,34 +153,25 @@ func (r *RaftServer) AppendCaller() {
 			<-funcRem
 			numFunc--
 		}
-		log.Print("Total Acks: ", totalAcks)
+		log.Print("[Server", r.id, "] Total Acks: ", totalAcks)
 		if totalAcks > len(AllServers)/2 {
 			// Got majority of acks, so commit
-			r.Commit_ch <- logentry.Lsn()
+			r.Commit_ch <- Lsn_Conn{logentry.Entry.Lsn(), logentry.Conn}
 		}
 	}
-}
-func (r *RaftServer) AppendReceiver() {
-	//~ for {
-		//~ entry := <-r.AppendInput_ch
-		//~ if r.state == Candidate { r.state = Follower }		// Getting append entries while being a candidate
-		//~ 
-		//~ r.log.Append(entry.Data())
-		//~ reply := "ACK " +strconv.FormatUint(uint64(entry.Lsn()),10)
-		//~ log.Print("[Server", r.id, "] ", reply, " sent to leader")
-		//~ // delay can be added here **
-		//~ r.AppendOutput_ch <- reply
-	//~ }
 }
 
 func (r *RaftServer) CommitCaller() {
 	for {
 		lsn := <-r.Commit_ch
+		// Evaluate
+		r.Input_ch <- String_Conn{string(r.log.Entries[lsn.SequenceNumber].Command), lsn.Conn}
+		
 		// Commit it to everyone's KV Store
 		for i:=0; i<len(r.clusterConfig.Servers); i++ {
 			if i == r.id { continue }
 			rserv := AllServers[i]
-			rserv.CommitInput_ch <- lsn
+			rserv.CommitInput_ch <- lsn.SequenceNumber
 		}
 		
 		// Does it wait for everyone to send back ACKs that they have committed? **
@@ -181,16 +188,6 @@ func (r *RaftServer) CommitCaller() {
 				//~ log.Printf("[Server%d] %s from %d at port %d", r.id, reply, id, r.clusterConfig.Servers[id].LogPort)
 			//~ }(i)
 		//~ }
-	}
-}
-
-func (r *RaftServer) CommitReceiver() {
-	for {
-		sequenceNumber := <-r.CommitInput_ch
-		r.log.Commit(sequenceNumber, nil)		// listener: nil - means that it is not supposed to reply back to the client
-		reply := "CACK " +strconv.FormatUint(uint64(sequenceNumber),10)			// ** reply to commit is not needed
-		log.Print("[Server", r.id, "] ", reply, " sent to leader")
-		r.CommitOutput_ch <- reply
 	}
 }
 
@@ -215,39 +212,55 @@ func (r *RaftServer) VoteHandler() {
 	//~ }
 }
 
-func ProcessAppendRequest(r *RaftServer, id int, entry LogEntry) {
+func ProcessAppendRequest(r *RaftServer, id int, entry LogEntry, prevTerm int) {
 	// Set the sender as the leader
-	if r.state == Candidate { r.state = Follower }			// Getting append entries while being a candidate
+	if r.state == Candidate { r.state = Follower }				// Getting append entries while being a candidate
 	if entry.Command == nil { return }							// An empty log just as a heartbeat
-		
-	r.log.Append(r.Term, entry.Data())
-	reply := "ACK " +strconv.FormatUint(uint64(entry.Lsn()),10)
-	log.Print("[Server", r.id, " ", r.state, "] ", reply, " sent to leader")
+	
+	// ** need to match the terms of leader and follower
+	hasaccepted := false
+	sequencenumber := entry.Lsn()
+	term := r.Term
+	
+	if (entry.Lsn() > r.log.LsnLogToBeAdded) {	// if the incoming log number is higher than what the follower expects next
+		//~ reply = "false " + strconv.FormatUint(uint64(entry.Lsn()),10)
+	} else {
+		if entry.Lsn()==0 || r.log.Entries[entry.Lsn()-1].Term == prevTerm {		// check if the terms of the previous logs match
+			// slice the log from entry.Lsn() onwards
+			r.log.Entries = r.log.Entries[entry.Lsn():]			// most of the time it would be 
+			// append the new entry
+			r.log.Append(r.Term, entry.Data())
+			//~ reply = "ACK " + strconv.FormatUint(uint64(entry.Lsn()),10)
+			hasaccepted = true
+		} else {
+			//~ reply = "false " + strconv.FormatUint(uint64(entry.Lsn()),10)
+		}
+	}
+	log.Print("[Server", r.id, "] Sent HasAccepted:", hasaccepted, " Lsn:", sequencenumber, " Term:", term, " to leader")
 	// delay can be added here **
-	r.AppendOutput_ch <- reply	
+	r.AppendOutput_ch <- AppendResponse{hasaccepted, sequencenumber, term}
 }
 
 func (r *RaftServer) Loop() {
 	r.state = Follower
-	//~ log.Print("in ")
 	for {
-		//~ log.Print("in loop")
-		for ; r.state == Follower; {
+		for r.state == Follower {
 			select {
 				// Retain the follower state as long as it is receiving the heartbeats on time
 				case entry := <-r.AppendInput_ch:
 					//~ log.Print("[Server", r.id, "] Got append request from ", entry.Id)
-					ProcessAppendRequest(r, entry.Id, entry.Entry)		// entry.Id = sender's ID
+					ProcessAppendRequest(r, entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
+					r.ShowLog()
 					
 				case sequenceNumber := <-r.CommitInput_ch:
 					//~ log.Print("[Server", r.id, "] here22")
 					r.log.Commit(sequenceNumber, nil)		// listener: nil - means that it is not supposed to reply back to the client
-					reply := "CACK " +strconv.FormatUint(uint64(sequenceNumber),10)
-					log.Print("[Server", r.id, " ", r.state, "] ", reply, " sent to leader")
-					r.CommitOutput_ch <- reply
+					//~ reply := "CACK " +strconv.FormatUint(uint64(sequenceNumber),10)
+					//~ log.Print("[Server", r.id, " ", r.state, "] ", reply, " sent to leader")
+					//~ r.CommitOutput_ch <- reply
 
 				case voteReq := <-r.VoteInput_ch:			// Someone ask for vote
-					log.Print("[Server", r.id, "] Was asked for vote from ", voteReq.Id, " (", voteReq.Term, " ", r.Term, " ", voteReq.LastLogTerm, " ", r.log.LastTerm, " ", voteReq.LastLsn+1, " ", r.log.LsnLogToBeAdded, ")")
+					log.Print("[Server", r.id, "] was asked for vote from ", voteReq.Id, " but it has already voted to ", r.VotedFor)
 					var term int
 					var vote bool
 					if voteReq.Term < r.Term {					// The receiver is already at a newer term
@@ -261,6 +274,7 @@ func (r *RaftServer) Loop() {
 							//~ log.Print("[Server", r.id, " ", r.state, "] here2  ", voteReq.Term, " " ,r.Term)
 							r.Term = term
 							vote = true
+							r.VotedFor = voteReq.Id
 						} else {
 							term = r.Term
 							vote = false
@@ -277,7 +291,7 @@ func (r *RaftServer) Loop() {
 			}
 		}
 		
-		for ; r.state == Candidate; {
+		for r.state == Candidate {
 			r.Term++
 			r.VotedFor = r.id
 			// Ask for vote from everyone else
@@ -301,7 +315,7 @@ func (r *RaftServer) Loop() {
 								log.Print("[Server", r.id, "] got vote from ", id)
 							}
 						case entry := <-rserv.AppendInput_ch:		// append request received from another leader
-							ProcessAppendRequest(r, entry.Id, entry.Entry)
+							ProcessAppendRequest(r, entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
 							if entry.Entry.Term > r.Term {
 								r.state = Follower
 								log.Print("[Server", r.id, "] changed + to Follower")
@@ -318,7 +332,7 @@ func (r *RaftServer) Loop() {
 				<-funcRem
 				numFunc--
 			}
-			log.Print("[Server", r.id, "] votes received:", totalVotes)
+			log.Print("[Server", r.id, "] Votes received: ", totalVotes)
 			
 			if totalVotes > len(AllServers)/2 {
 				// make it the leader
@@ -333,8 +347,8 @@ func (r *RaftServer) Loop() {
 			}
 		}
 
-		if r.state == Leader {
-			log.Print("[Server", r.id, "] Leader sending heartbeats...")
+		for r.state == Leader {
+			//~ log.Print("[Server", r.id, "] Leader sending heartbeats...")
 			// send an empty append request as a heartbeat
 			time.Sleep(500 * time.Millisecond)
 			for i:=0; i<len(AllServers); i++ {
@@ -343,9 +357,13 @@ func (r *RaftServer) Loop() {
 				var dummy LogEntry
 				dummy.Term = rserv.Term
 				dummy.Command = nil
-				rserv.AppendInput_ch <- AppendRequest{r.id, dummy}		// r.id = sender's ID... i = receiver's ID
+				rserv.AppendInput_ch <- AppendRequest{r.id, dummy, -1}		// r.id = sender's ID... i = receiver's ID
+				
+				r.clusterConfig.Servers[i].NextIndex = r.log.LsnLogToBeAdded
 			}
-			break
+			r.ShowLog()
+			//~ log.Print("[Server", r.id, "] Leader dies")
+			//~ break
 		}
 	}
 }
@@ -381,32 +399,6 @@ func (r *RaftServer) AcceptConnection(port int) {
 	}
 }
 
-// Accepts an RPC Request
-//~ func (r *RaftServer) AcceptRPC(port int) {
-	//~ // Register this function
-	//~ ap1 := new(RPC)
-	//ap1.r = r
-	//~ rpc.Register(ap1)
-	//rpc.Register(r)
-	//~ 
-	//~ gob.Register(LogEntry{})
-	//~ 
-	//~ listener, e := net.Listen("tcp", "localhost:"+strconv.Itoa(port))
-	//~ defer listener.Close()
-	//~ if e != nil {
-		//~ log.Fatal("[Server] Error in listening:", e)
-	//~ }
-	//~ for {
-	//~ 
-		//~ conn, err := listener.Accept();
-		//~ if err != nil {
-			//~ log.Fatal("[Server] Error in accepting: ", err)
-		//~ } else {
-			//~ go rpc.ServeConn(conn)
-		//~ }
-	//~ }
-//~ }
-
 // ClientListener is spawned for every client to retrieve the command and send it to the input_ch channel
 func (r *RaftServer) ClientListener(listener net.Conn) {
 	command, rem := "", ""
@@ -433,9 +425,9 @@ func (r *RaftServer) ClientListener(listener net.Conn) {
 		// For multiple commands in the byte stream
 		for {
 			if command != "" {
-				if command[0:3] == "get" {
+				if command[:3] == "get" {
 					r.Input_ch <- String_Conn{command, listener}
-					log.Printf("[Server%d %d] %s", r.id, r.state, command)
+					log.Printf("[Server%d] %s", r.id, r.state, command)
 				} else {
 	//				log.Print("Command:",command)
 					commandbytes := []byte(command)
@@ -443,37 +435,21 @@ func (r *RaftServer) ClientListener(listener net.Conn) {
 					l, _ := r.log.Append(r.Term, commandbytes)
 					// Add to the channel to ask everyone to append the entry
 					logentry := LogEntry(l)				// typecasting
-					r.Append_ch <- logentry
+					r.Append_ch <- LogEntry_Conn{logentry, listener}
 				}
 			} else { break }
 				command, rem = r.GetCommand(rem)
 		}
 	}
 }
-// Connect to other servers
-func (r *RaftServer) ConnectToServers(i int, isLeader bool) {
-	// Check for connection unless the ith server accepts the rpc connection
-	var client *rpc.Client = nil
-	var err error = nil
-	// Polls until the connection is made
-	for {
-		client, err = rpc.Dial("tcp", "localhost:" + strconv.Itoa(9001+2*i))
-		if err == nil {
-			log.Print("[Server", r.id, "] Connected to ", strconv.Itoa(9001+2*i))
-			break
-		}
-	}
-	r.clusterConfig.Servers[i] = ServerConfig{
-		Id: i,
-		Hostname: "Server"+strconv.Itoa(i),
-		ClientPort: 9000+2*i, 
-		LogPort: 9001+2*i,
-		//~ IsLeader: isLeader,
-		Client: client,
-		LsnToCommit: 0,
-	}
-}
 
+func (r *RaftServer) ShowLog() {
+	fmt.Print("[Server", r.id, "] Log: ")
+	for i:=0; i<len(r.log.Entries) /*r.log.LsnLogToBeAdded*/ -1; i++ {
+		fmt.Print("{", r.log.Entries[i].Term, r.log.Entries[i].Lsn(), "}, ")
+	}
+	fmt.Println()
+}
 // Initialize the server
 func (r *RaftServer) Init(totalServers int, config *ClusterConfig, thisServerId int) {
 	r.totalServers = totalServers
@@ -483,11 +459,11 @@ func (r *RaftServer) Init(totalServers int, config *ClusterConfig, thisServerId 
 	
 	r.KVStore = make(map[string]Value)
 	r.Input_ch = make(chan String_Conn, 10000)
-	r.Append_ch = make(chan LogEntry, 10000)
+	r.Append_ch = make(chan LogEntry_Conn, 10000)
 	r.AppendInput_ch = make(chan AppendRequest, 10000)
-	r.AppendOutput_ch = make(chan string, 10000)
+	r.AppendOutput_ch = make(chan AppendResponse, 10000)
 	
-	r.Commit_ch = make(chan Lsn, 10000)
+	r.Commit_ch = make(chan Lsn_Conn, 10000)
 	r.CommitInput_ch = make(chan Lsn, 10000)
 	r.CommitOutput_ch = make(chan string, 10000)
 	r.Output_ch = make(chan String_Conn, 10000)
@@ -495,7 +471,7 @@ func (r *RaftServer) Init(totalServers int, config *ClusterConfig, thisServerId 
 	// --- Vote details ---
 	r.VoteInput_ch = make(chan VoteRequest, totalServers + 2)		// + 2 just to be on a safe side (as of now)
 	r.VoteOutput_ch = make(chan VoteReturn, totalServers + 2)
-	r.Term = 1
+	r.Term = 0
 	r.VotedFor = -1			// voted for no one
 	r.HeartBeatTimer = 1000
 	r.ElectionTimer = 1000
@@ -504,21 +480,11 @@ func (r *RaftServer) Init(totalServers int, config *ClusterConfig, thisServerId 
 	//~ go r.AcceptRPC(r.GetServer(r.id).LogPort)
 	go r.Evaluator()
 	go r.AppendCaller()
-	go r.AppendReceiver()
 	go r.CommitCaller()
-	go r.CommitReceiver()
 	go r.DataWriter()
 	go r.VoteHandler()
 	go r.Loop()
-	
-	// Connect to other servers and store their details
-	for i:=0; i<totalServers; i++ {
-		isLeader := false
-		if i == 0 { isLeader = true }
-		if i != r.id {
-			go r.ConnectToServers(i, isLeader)
-		}
-	}
+
 }
 
 // ------------- LogEntry -------------------
@@ -554,7 +520,12 @@ func (s *SharedLog) Init(r *RaftServer) {
 // Adds the data into logentry
 func (s *SharedLog) Append(term int, data []byte) (LogEntry, error) {
 	log := LogEntry{term, s.LsnLogToBeAdded, data, false}
-	s.Entries = append(s.Entries, log)
+	if s.LsnLogToBeAdded == Lsn(len(s.Entries)) {
+		s.Entries = append(s.Entries, log)
+	} else {
+		fmt.Print(s.LsnLogToBeAdded, " ", Lsn(len(s.Entries)))
+		s.Entries[s.LsnLogToBeAdded] = log
+	}
 	s.LsnLogToBeAdded++
 	s.LastTerm = term
 	return log, nil
