@@ -9,6 +9,7 @@ import (
 		"strconv"
 )
 
+// Trims a byte array from the point where '\0' is found
 func Trim(input []byte) []byte {
 	i := 0
 	for ; input[i] != 0; i++ {}
@@ -57,24 +58,24 @@ type ClusterConfig struct {
 }
 
 type VoteRequest struct {
-	Id				int		// id of the candidate requesting vote
-	Term			int
-	LastLsn			Lsn
-	LastLogTerm		int
+	Id				int		// Id of the candidate requesting vote
+	Term			int		// Term of the election
+	LastLsn			Lsn		// Lsn (Log Sequence Number) of the latest log entry
+	LastLogTerm		int		// Term of the latest log entry
 }
-type VoteReturn struct {
-	Term int
-	IsVoted bool
+type VoteResponse struct {
+	Term int				// Term for it has voted
+	IsVoted bool			// Voted or not
 }
 type AppendRequest struct {
-	Id				int
-	Entry			LogEntry
-	PrevTerm		int
+	Id				int			// Id of the server asking to append
+	Entry			LogEntry	// 
+	PrevTerm		int			//
 }
 type AppendResponse struct {
-	HasAccepted		bool			// if the follower has accepted the packet
-	SequenceNumber	Lsn				// the sequence number of log entry sent by the server (needed, to know the log entry to which this is the response)
-	Term			int				// follower's current term (to update the server, in case it is at a previous term)
+	HasAccepted		bool		// True, if the follower has accepted the packet
+	SequenceNumber	Lsn			// Sequence number of log entry sent by the server (needed, to know the log entry to which this is the response)
+	Term			int			// Follower's current term (to update the server, in case it is at a previous term)
 }
 
 // ----------------- RaftServer ------------------
@@ -86,7 +87,7 @@ type RaftServer struct {
 	
 	// --- Vote details -----
 	VoteInput_ch 	chan VoteRequest
-	VoteOutput_ch 	chan VoteReturn
+	VoteOutput_ch 	chan VoteResponse
 	Term 			int
 	VotedFor		int
 	HeartBeatTimer	int
@@ -107,7 +108,7 @@ type RaftServer struct {
 	Output_ch 		chan String_Conn
 }
 
-
+// This function 
 func (r *RaftServer) AppendCaller() {
 	for {
 		logentry := <-r.Append_ch
@@ -134,7 +135,10 @@ func (r *RaftServer) AppendCaller() {
 						if reply.HasAccepted == false {
 							// not appended
 							// decrease NextIndex for id'th server
-							r.clusterConfig.Servers[id].NextIndex = reply.SequenceNumber - 1
+							// ** But what if the follower rejects even the first packet (invalid case)
+							if reply.SequenceNumber == 0 { r.clusterConfig.Servers[id].NextIndex = 0
+							} else { r.clusterConfig.Servers[id].NextIndex = reply.SequenceNumber - 1 }
+							
 							index := r.clusterConfig.Servers[id].NextIndex
 							logentry_ := r.log.Entries[index]
 							prevterm := -1										// term of the previous log entry
@@ -143,7 +147,7 @@ func (r *RaftServer) AppendCaller() {
 							rserv.AppendInput_ch <- AppendRequest{r.id, logentry_, prevterm}
 						}
 						totalAcks++
-						log.Print("[Server", r.id, "] Received HasAccepted:", reply.HasAccepted, " Lsn:", reply.SequenceNumber, " Term:", reply.Term, " from leader")
+						//~ log.Print("[Server", r.id, "] Received HasAccepted:", reply.HasAccepted, " Lsn:", reply.SequenceNumber, " Term:", reply.Term, " from leader")
 					case <-time.After(1000 * time.Millisecond):
 				}
 				funcRem <- true
@@ -153,7 +157,7 @@ func (r *RaftServer) AppendCaller() {
 			<-funcRem
 			numFunc--
 		}
-		log.Print("[Server", r.id, "] Total Acks: ", totalAcks)
+		//~ log.Print("[Server", r.id, "] Total Acks: ", totalAcks)
 		if totalAcks > len(AllServers)/2 {
 			// Got majority of acks, so commit
 			r.Commit_ch <- Lsn_Conn{logentry.Entry.Lsn(), logentry.Conn}
@@ -191,52 +195,33 @@ func (r *RaftServer) CommitCaller() {
 	}
 }
 
-func (r *RaftServer) VoteHandler() {
-	//~ for {
-		//~ voteReq := <-r.VoteInput_ch
-		//~ var term int
-		//~ var vote bool
-		//~ if r.VotedFor != -1 {					// If it has already voted
-			//~ log.Print("[Server", r.id, " ", r.state, "] here0")
-			//~ vote = false
-		//~ } else if voteReq.Term < r.Term {		// The receiver is already at the newer term
-			//~ log.Print("[Server", r.id, " ", r.state, "] here1  ", voteReq.Term, " " ,r.Term)
-			//~ term = r.Term
-			//~ vote = false
-		//~ } else {
-			//~ log.Print("[Server", r.id, " ", r.state, "] here2  ", voteReq.Term, " " ,r.Term)
-			//~ r.Term = term
-			//~ vote = true
-		//~ }
-		//~ r.VoteOutput_ch<-VoteReturn{vote}
-	//~ }
-}
-
-func ProcessAppendRequest(r *RaftServer, id int, entry LogEntry, prevTerm int) {
+func (r *RaftServer) ProcessAppendRequest(id int, entry LogEntry, prevTerm int) {
 	// Set the sender as the leader
 	if r.state == Candidate { r.state = Follower }				// Getting append entries while being a candidate
 	if entry.Command == nil { return }							// An empty log just as a heartbeat
 	
+	//~ log.Print("{", entry.Term, entry.Lsn(), r.log.LsnLogToBeAdded, "}")
 	// ** need to match the terms of leader and follower
-	hasaccepted := false
-	sequencenumber := entry.Lsn()
-	term := r.Term
+	hasaccepted := false			// True, if it has accepted the log entry
+	sequencenumber := entry.Lsn()	// Sequence number for which this follower will respond
+	term := r.Term					// Follower's term to be returned
 	
-	if (entry.Lsn() > r.log.LsnLogToBeAdded) {	// if the incoming log number is higher than what the follower expects next
-		//~ reply = "false " + strconv.FormatUint(uint64(entry.Lsn()),10)
-	} else {
+	if r.Term < entry.Term {		// r.Term is not the latest, don't accept the packet but update r.Term
+		r.Term = entry.Term
+	} else if r.Term > entry.Term {
+		// If the follower's term is the latest, don't accept the packet and update the server with the latest term
+		// hasaccepted = false
+		// term = r.Term
+	} else if entry.Lsn() <= r.log.LsnLogToBeAdded {		// if the incoming log number is not higher than what the follower expects next
 		if entry.Lsn()==0 || r.log.Entries[entry.Lsn()-1].Term == prevTerm {		// check if the terms of the previous logs match
 			// slice the log from entry.Lsn() onwards
-			r.log.Entries = r.log.Entries[entry.Lsn():]			// most of the time it would be 
+			r.log.Entries = r.log.Entries[:entry.Lsn()]			// most of the time it would be 
 			// append the new entry
-			r.log.Append(r.Term, entry.Data())
-			//~ reply = "ACK " + strconv.FormatUint(uint64(entry.Lsn()),10)
+			r.log.Append(entry.Term, entry.Data())
 			hasaccepted = true
-		} else {
-			//~ reply = "false " + strconv.FormatUint(uint64(entry.Lsn()),10)
 		}
 	}
-	log.Print("[Server", r.id, "] Sent HasAccepted:", hasaccepted, " Lsn:", sequencenumber, " Term:", term, " to leader")
+	//~ log.Print("[Server", r.id, "] Sent HasAccepted:", hasaccepted, " Lsn:", sequencenumber, " Term:", term, " to leader")
 	// delay can be added here **
 	r.AppendOutput_ch <- AppendResponse{hasaccepted, sequencenumber, term}
 }
@@ -249,7 +234,7 @@ func (r *RaftServer) Loop() {
 				// Retain the follower state as long as it is receiving the heartbeats on time
 				case entry := <-r.AppendInput_ch:
 					//~ log.Print("[Server", r.id, "] Got append request from ", entry.Id)
-					ProcessAppendRequest(r, entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
+					r.ProcessAppendRequest(entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
 					r.ShowLog()
 					
 				case sequenceNumber := <-r.CommitInput_ch:
@@ -281,7 +266,7 @@ func (r *RaftServer) Loop() {
 						}
 					}
 					//~ log.Print("[Server", r.id, " ", r.state, "] voted ", vote)
-					r.VoteOutput_ch<-VoteReturn{term, vote}
+					r.VoteOutput_ch<-VoteResponse{term, vote}
 					
 				case <-time.After(time.Duration(r.ElectionTimer) * time.Millisecond):
 					//~ log.Print("[Server", r.id, "] here44")
@@ -298,7 +283,7 @@ func (r *RaftServer) Loop() {
 			for i:=0; i<len(AllServers); i++ {
 				if i == r.id { continue }
 				rserv := AllServers[i]
-				rserv.VoteInput_ch <- VoteRequest{r.id, r.Term, r.log.LsnLogToBeAdded, r.log.LastTerm}
+				rserv.VoteInput_ch <- VoteRequest{r.id, r.Term, r.log.LsnLogToBeAdded-1, r.log.LastTerm}
 			}
 			// Check their responses concurrently
 			totalVotes := 1				// Vote for itself
@@ -315,7 +300,7 @@ func (r *RaftServer) Loop() {
 								log.Print("[Server", r.id, "] got vote from ", id)
 							}
 						case entry := <-rserv.AppendInput_ch:		// append request received from another leader
-							ProcessAppendRequest(r, entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
+							r.ProcessAppendRequest(entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
 							if entry.Entry.Term > r.Term {
 								r.state = Follower
 								log.Print("[Server", r.id, "] changed + to Follower")
@@ -427,7 +412,7 @@ func (r *RaftServer) ClientListener(listener net.Conn) {
 			if command != "" {
 				if command[:3] == "get" {
 					r.Input_ch <- String_Conn{command, listener}
-					log.Printf("[Server%d] %s", r.id, r.state, command)
+					log.Printf("[Server%d] %s", r.id, command)
 				} else {
 	//				log.Print("Command:",command)
 					commandbytes := []byte(command)
@@ -443,9 +428,10 @@ func (r *RaftServer) ClientListener(listener net.Conn) {
 	}
 }
 
+// Displays the log [{term,lsn}...]
 func (r *RaftServer) ShowLog() {
 	fmt.Print("[Server", r.id, "] Log: ")
-	for i:=0; i<len(r.log.Entries) /*r.log.LsnLogToBeAdded*/ -1; i++ {
+	for i:=0; i<len(r.log.Entries) /*r.log.LsnLogToBeAdded -1*/; i++ {
 		fmt.Print("{", r.log.Entries[i].Term, r.log.Entries[i].Lsn(), "}, ")
 	}
 	fmt.Println()
@@ -470,7 +456,7 @@ func (r *RaftServer) Init(totalServers int, config *ClusterConfig, thisServerId 
 	
 	// --- Vote details ---
 	r.VoteInput_ch = make(chan VoteRequest, totalServers + 2)		// + 2 just to be on a safe side (as of now)
-	r.VoteOutput_ch = make(chan VoteReturn, totalServers + 2)
+	r.VoteOutput_ch = make(chan VoteResponse, totalServers + 2)
 	r.Term = 0
 	r.VotedFor = -1			// voted for no one
 	r.HeartBeatTimer = 1000
@@ -482,7 +468,6 @@ func (r *RaftServer) Init(totalServers int, config *ClusterConfig, thisServerId 
 	go r.AppendCaller()
 	go r.CommitCaller()
 	go r.DataWriter()
-	go r.VoteHandler()
 	go r.Loop()
 
 }
@@ -508,8 +493,8 @@ func (l LogEntry) Committed() bool {
 type SharedLog struct {
 	LsnLogToBeAdded Lsn		// Sequence number of the log to be added
 	LastTerm int			// Term of the last log added
-	Entries []LogEntry
-	r *RaftServer
+	Entries []LogEntry		// Entries
+	r *RaftServer			// Server to which this log belongs to
 }
 func (s *SharedLog) Init(r *RaftServer) {
 	s.LsnLogToBeAdded = 0
@@ -522,8 +507,9 @@ func (s *SharedLog) Append(term int, data []byte) (LogEntry, error) {
 	log := LogEntry{term, s.LsnLogToBeAdded, data, false}
 	if s.LsnLogToBeAdded == Lsn(len(s.Entries)) {
 		s.Entries = append(s.Entries, log)
+		//~ fmt.Println("[Server", s.r.id, "] ", Lsn((len(s.Entries))), "--->")
 	} else {
-		fmt.Print(s.LsnLogToBeAdded, " ", Lsn(len(s.Entries)))
+		//~ fmt.Print("[Server", s.r.id, "] ", s.LsnLogToBeAdded, " ", Lsn(len(s.Entries)))
 		s.Entries[s.LsnLogToBeAdded] = log
 	}
 	s.LsnLogToBeAdded++

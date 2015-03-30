@@ -7,7 +7,10 @@ import (
 	//~ "time"
 	"testing"
 	//~ "strconv"
+	"strings"
 )
+
+var port = "9000"
 
 func TestMain(t *testing.T) {
 	// Initializing the server
@@ -15,7 +18,6 @@ func TestMain(t *testing.T) {
 //	go AcceptConnection()
 //	time.Sleep(time.Millisecond * 1)
 }
-
 
 type TestCase struct {
 	input		string		// the input command
@@ -29,7 +31,7 @@ var end_ch chan int
 // SpawnClient is spawned for every client passing the id and the testcases it needs to check
 func SpawnClient(t *testing.T, id int, testCases []TestCase) {
 	// Make the connection
-	tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:9000")
+	tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:"+port)
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
 		log.Print("Error in dialing: ", err)
@@ -55,8 +57,17 @@ func SpawnClient(t *testing.T, id int, testCases []TestCase) {
 		
 //		log.Print("[Client]:",string(reply))
 		if exp_output != "" { reply = reply[0:len(exp_output)] }
-		// if expected output is "", then don't check
-		if exp_output!="" && string(reply) != exp_output {
+		// if it is a redirection message
+		if strings.Split(string(reply), " ")[0] == "ERR_REDIRECT" {
+			port = strings.Split(string(reply), " ")[2]
+			tcpAddr, err = net.ResolveTCPAddr("tcp", "localhost:"+port)
+			conn, err = net.DialTCP("tcp", nil, tcpAddr)
+			if err != nil {
+				log.Print("Error in dialing: ", err)
+				return
+			}
+			defer conn.Close()
+		} else if exp_output!="" && string(reply) != exp_output {	// if expected output is "", then don't check
 			t.Error(fmt.Sprintf("Input: %q, Expected Output: %q, Actual Output: %q", input, exp_output, string(reply)))
 		}
 	}
@@ -87,7 +98,7 @@ func TestCase1(t *testing.T) {
 	// ---------- set the values of different keys -----------
 	var testCases = []TestCase {
 		{"set alpha 0 10\r\nI am ALPHA\r\n", "", true},
-		{"set beta 0 9 noreply\r\nI am BETA\r\n", "", false},
+		{"set beta 0 9\r\nI am BETA\r\n", "", true},
 		{"set gamma 0 10\r\nI am GAMMA\r\n", "", true},
 		{"set theta 10 10 noreply\r\nI am THETA\r\n", "", false},
 	}
