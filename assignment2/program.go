@@ -148,8 +148,8 @@ func (s *SharedLog_) Commit(sequenceNumber raft.Lsn, conn net.Conn) {
 	lsnToCommit := se.LsnToCommit
 	// Adds the commands to the input_ch to be furthur processed by Evaluator
 	for i:=lsnToCommit; i<=sequenceNumber; i++ {
-		raft.Input_ch <- raft.String_Conn{string(r.log.Entries[i].Command), conn}
-		r.log.Entries[i].IsCommitted = true
+		raft.Input_ch <- raft.String_Conn{string(s.Entries[i].Command), conn}
+		s.Entries[i].IsCommitted = true
 	}
 	se.LsnToCommit++
 }
@@ -288,7 +288,6 @@ func (r *Raft) ClientListener(listener net.Conn) {
 		}
 
 		command, rem = GetCommand(rem + input_)
-
 		// For multiple commands in the byte stream
 		for {
 			if command != "" {

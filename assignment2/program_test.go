@@ -28,7 +28,6 @@ var end_ch chan int
 
 // SpawnClient is spawned for every client passing the id and the testcases it needs to check
 func SpawnClient(t *testing.T, id int, testCases []TestCase) {
-
 	// Make the connection
 	tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:9000")
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
@@ -82,7 +81,8 @@ func ClientSpawner(t *testing.T, testCases []TestCase, n int) {
 
 func TestCase1(t *testing.T) {
 	// Number of concurrent clients
-	var n = 5
+	n := 5
+
 	// ---------- set the values of different keys -----------
 	var testCases = []TestCase {
 		{"set alpha 0 10\r\nI am ALPHA\r\n", "", true},
@@ -104,7 +104,7 @@ func TestCase1(t *testing.T) {
 		{"get theta\r\n", "ERR_NOT_FOUND\r\n", true},
 	}
 	ClientSpawner(t, testCases, 1)
-	
+
 	// ---------- get broken into different packets -----------
 	testCases = []TestCase {
 		{"get alpha\r\n", "VALUE 10\r\nI am ALPHA\r\n", true},
