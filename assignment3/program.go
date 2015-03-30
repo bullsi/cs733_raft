@@ -36,7 +36,7 @@ func main() {
 			Id: i,
 			Hostname: "Server"+strconv.Itoa(i),
 			ClientPort: 9000+2*i, 
-			LogPort: 9001+2*i,
+			//~ LogPort: 9001+2*i,
 			Client: nil,
 			LsnToCommit: 0,
 		}

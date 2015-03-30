@@ -226,133 +226,142 @@ func (r *RaftServer) ProcessAppendRequest(id int, entry LogEntry, prevTerm int) 
 	r.AppendOutput_ch <- AppendResponse{hasaccepted, sequencenumber, term}
 }
 
+func (r *RaftServer) FollowerLoop() {
+	select {
+		// Retain the follower state as long as it is receiving the heartbeats on time
+		case entry := <-r.AppendInput_ch:
+			//~ log.Print("[Server", r.id, "] Got append request from ", entry.Id)
+			r.ProcessAppendRequest(entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
+			r.ShowLog()
+			
+		case sequenceNumber := <-r.CommitInput_ch:
+			//~ log.Print("[Server", r.id, "] here22")
+			r.log.Commit(sequenceNumber, nil)		// listener: nil - means that it is not supposed to reply back to the client
+			//~ reply := "CACK " +strconv.FormatUint(uint64(sequenceNumber),10)
+			//~ log.Print("[Server", r.id, " ", r.state, "] ", reply, " sent to leader")
+			//~ r.CommitOutput_ch <- reply
+
+		case voteReq := <-r.VoteInput_ch:			// Someone ask for vote
+			log.Print("[Server", r.id, "] was asked for vote from ", voteReq.Id, " but it has already voted to ", r.VotedFor)
+			var term int
+			var vote bool
+			if voteReq.Term < r.Term {					// The receiver is already at a newer term
+				term = r.Term
+				vote = false
+			} else {
+				if r.VotedFor != -1 {					// If it has already voted
+					vote = false
+				} else if voteReq.LastLogTerm > r.log.LastTerm ||
+				(voteReq.LastLogTerm == r.log.LastTerm && voteReq.LastLsn+1 >= r.log.LsnLogToBeAdded) {
+					//~ log.Print("[Server", r.id, " ", r.state, "] here2  ", voteReq.Term, " " ,r.Term)
+					r.Term = term
+					vote = true
+					r.VotedFor = voteReq.Id
+				} else {
+					term = r.Term
+					vote = false
+				}
+			}
+			//~ log.Print("[Server", r.id, " ", r.state, "] voted ", vote)
+			r.VoteOutput_ch<-VoteResponse{term, vote}
+			
+		case <-time.After(time.Duration(r.ElectionTimer) * time.Millisecond):
+			//~ log.Print("[Server", r.id, "] here44")
+			r.state = Candidate
+			log.Print("[Server", r.id,"] changed to Candidate")
+			break
+	}
+}
+
+func (r *RaftServer) CandidateLoop() {
+	r.Term++
+	r.VotedFor = r.id
+	// Ask for vote from everyone else
+	for i:=0; i<len(AllServers); i++ {
+		if i == r.id { continue }
+		rserv := AllServers[i]
+		rserv.VoteInput_ch <- VoteRequest{r.id, r.Term, r.log.LsnLogToBeAdded-1, r.log.LastTerm}
+	}
+	// Check their responses concurrently
+	totalVotes := 1				// Vote for itself
+	numFunc := len(AllServers) - 1
+	funcRem := make(chan bool, 5)
+	for i:=0; i<len(AllServers); i++ {
+		if i == r.id { continue }
+		go func(id int){
+			rserv := AllServers[id]
+			select {
+				case vote := <-rserv.VoteOutput_ch:			// vote given by the other server
+					if vote.IsVoted {
+						totalVotes++
+						log.Print("[Server", r.id, "] got vote from ", id)
+					}
+				case entry := <-rserv.AppendInput_ch:		// append request received from another leader
+					r.ProcessAppendRequest(entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
+					if entry.Entry.Term > r.Term {
+						r.state = Follower
+						log.Print("[Server", r.id, "] changed + to Follower")
+					}
+					break
+				case <-time.After(1000 * time.Millisecond):
+					// loss of vote
+			}
+			funcRem <- true
+		}(i)
+	}
+	
+	for numFunc>0 && totalVotes <= len(AllServers)/2 {
+		<-funcRem
+		numFunc--
+	}
+	log.Print("[Server", r.id, "] Votes received: ", totalVotes)
+	
+	if totalVotes > len(AllServers)/2 {
+		// make it the leader
+		r.state = Leader
+		log.Print("[Server", r.id, "] changed to Leader")
+		return
+	} else {
+		// what if the candidate does not receive majority of votes **
+		// lets say it becomes a follower again
+		r.state = Follower
+		log.Print("[Server", r.id, "] changed to Follower")
+	}
+}
+
+func (r *RaftServer) LeaderLoop() {
+	//~ log.Print("[Server", r.id, "] Leader sending heartbeats...")
+	// send an empty append request as a heartbeat
+	time.Sleep(500 * time.Millisecond)
+	for i:=0; i<len(AllServers); i++ {
+		if i == r.id { continue }
+		rserv := AllServers[i]
+		var dummy LogEntry
+		dummy.Term = rserv.Term
+		dummy.Command = nil
+		rserv.AppendInput_ch <- AppendRequest{r.id, dummy, -1}		// r.id = sender's ID... i = receiver's ID
+		
+		r.clusterConfig.Servers[i].NextIndex = r.log.LsnLogToBeAdded
+	}
+	r.ShowLog()
+	//~ log.Print("[Server", r.id, "] Leader dies")
+	//~ break
+}
+
 func (r *RaftServer) Loop() {
 	r.state = Follower
 	for {
 		for r.state == Follower {
-			select {
-				// Retain the follower state as long as it is receiving the heartbeats on time
-				case entry := <-r.AppendInput_ch:
-					//~ log.Print("[Server", r.id, "] Got append request from ", entry.Id)
-					r.ProcessAppendRequest(entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
-					r.ShowLog()
-					
-				case sequenceNumber := <-r.CommitInput_ch:
-					//~ log.Print("[Server", r.id, "] here22")
-					r.log.Commit(sequenceNumber, nil)		// listener: nil - means that it is not supposed to reply back to the client
-					//~ reply := "CACK " +strconv.FormatUint(uint64(sequenceNumber),10)
-					//~ log.Print("[Server", r.id, " ", r.state, "] ", reply, " sent to leader")
-					//~ r.CommitOutput_ch <- reply
-
-				case voteReq := <-r.VoteInput_ch:			// Someone ask for vote
-					log.Print("[Server", r.id, "] was asked for vote from ", voteReq.Id, " but it has already voted to ", r.VotedFor)
-					var term int
-					var vote bool
-					if voteReq.Term < r.Term {					// The receiver is already at a newer term
-						term = r.Term
-						vote = false
-					} else {
-						if r.VotedFor != -1 {					// If it has already voted
-							vote = false
-						} else if voteReq.LastLogTerm > r.log.LastTerm ||
-						(voteReq.LastLogTerm == r.log.LastTerm && voteReq.LastLsn+1 >= r.log.LsnLogToBeAdded) {
-							//~ log.Print("[Server", r.id, " ", r.state, "] here2  ", voteReq.Term, " " ,r.Term)
-							r.Term = term
-							vote = true
-							r.VotedFor = voteReq.Id
-						} else {
-							term = r.Term
-							vote = false
-						}
-					}
-					//~ log.Print("[Server", r.id, " ", r.state, "] voted ", vote)
-					r.VoteOutput_ch<-VoteResponse{term, vote}
-					
-				case <-time.After(time.Duration(r.ElectionTimer) * time.Millisecond):
-					//~ log.Print("[Server", r.id, "] here44")
-					r.state = Candidate
-					log.Print("[Server", r.id,"] changed to Candidate")
-					break
-			}
+			r.FollowerLoop()
 		}
-		
 		for r.state == Candidate {
-			r.Term++
-			r.VotedFor = r.id
-			// Ask for vote from everyone else
-			for i:=0; i<len(AllServers); i++ {
-				if i == r.id { continue }
-				rserv := AllServers[i]
-				rserv.VoteInput_ch <- VoteRequest{r.id, r.Term, r.log.LsnLogToBeAdded-1, r.log.LastTerm}
-			}
-			// Check their responses concurrently
-			totalVotes := 1				// Vote for itself
-			numFunc := len(AllServers) - 1
-			funcRem := make(chan bool, 5)
-			for i:=0; i<len(AllServers); i++ {
-				if i == r.id { continue }
-				go func(id int){
-					rserv := AllServers[id]
-					select {
-						case vote := <-rserv.VoteOutput_ch:			// vote given by the other server
-							if vote.IsVoted {
-								totalVotes++
-								log.Print("[Server", r.id, "] got vote from ", id)
-							}
-						case entry := <-rserv.AppendInput_ch:		// append request received from another leader
-							r.ProcessAppendRequest(entry.Id, entry.Entry, entry.PrevTerm)		// entry.Id = sender's ID
-							if entry.Entry.Term > r.Term {
-								r.state = Follower
-								log.Print("[Server", r.id, "] changed + to Follower")
-							}
-							break
-						case <-time.After(1000 * time.Millisecond):
-							// loss of vote
-					}
-					funcRem <- true
-				}(i)
-			}
-			
-			for numFunc>0 && totalVotes <= len(AllServers)/2 {
-				<-funcRem
-				numFunc--
-			}
-			log.Print("[Server", r.id, "] Votes received: ", totalVotes)
-			
-			if totalVotes > len(AllServers)/2 {
-				// make it the leader
-				r.state = Leader
-				log.Print("[Server", r.id, "] changed to Leader")
-				break
-			} else {
-				// what if the candidate does not receive majority of votes **
-				// lets say it becomes a follower again
-				r.state = Follower
-				log.Print("[Server", r.id, "] changed to Follower")
-			}
+			r.CandidateLoop()
 		}
-
 		for r.state == Leader {
-			//~ log.Print("[Server", r.id, "] Leader sending heartbeats...")
-			// send an empty append request as a heartbeat
-			time.Sleep(500 * time.Millisecond)
-			for i:=0; i<len(AllServers); i++ {
-				if i == r.id { continue }
-				rserv := AllServers[i]
-				var dummy LogEntry
-				dummy.Term = rserv.Term
-				dummy.Command = nil
-				rserv.AppendInput_ch <- AppendRequest{r.id, dummy, -1}		// r.id = sender's ID... i = receiver's ID
-				
-				r.clusterConfig.Servers[i].NextIndex = r.log.LsnLogToBeAdded
-			}
-			r.ShowLog()
-			//~ log.Print("[Server", r.id, "] Leader dies")
-			//~ break
+			r.LeaderLoop()
 		}
 	}
 }
-
 
 func (r RaftServer) GetServer(id int) *ServerConfig {
 	return &r.clusterConfig.Servers[id]
@@ -436,6 +445,7 @@ func (r *RaftServer) ShowLog() {
 	}
 	fmt.Println()
 }
+
 // Initialize the server
 func (r *RaftServer) Init(totalServers int, config *ClusterConfig, thisServerId int) {
 	r.totalServers = totalServers

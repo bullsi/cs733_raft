@@ -33,30 +33,49 @@ Once it finds one, the normal procedure continues.
 # Implementation
 
 The struct `RaftServer` encapsulates the details of the server.
-The servers can be executed in any order. One will wait for the other to spawn and then connect.
-The `main()` creates a new `Raft` object initializing it with all the server details.
+It contains the data related to it and the components, running as go routines, to process a request.
+`func main()` creates its 5 concurrent instances. They communicate using channels unlike RPCs like before.
 
-Following is the description of implemented functions in program
+Following is the description of the implemented functions of `RaftServer`
+### Channels for server-server communication
+ - `VoteInput_ch`: An instance of `VoteRequest` for asking vote.
+ - `VoteOutput_ch`: An instance of `VoteResponse` as the reply of the above.
+ - `AppendInput_ch`: An instance of `AppendRequest` asking the server to append an entry.
+ - `AppendOutput_ch`: An instance of `AppendResponse` as the reply of the above.
+ - `CommitInput_ch`: An instance of `Lsn` asking the server to commit up to an entry.
+ - `CommitOutput_ch`: An instance of `strign` as the reply of the above. It is of no use as of now - added for completeness sake.
 
- - `func Init`: It initializes the server, i.e. starts threads for different purposes.
+Client-server communication is done via TCP as in `assignment2`
+
+## Channels for intra-server communication
+The leader receives a client request, process it and forms a command.
+If that command is not a `get` or `getm` (ie a command which changes the state of the KV store), it undergoes the following sequence.
+ - It is added to the `append_ch`.
+ - `func AppendCaller()`
+   - It takes the command from `append_ch` and ask every other server using `AppendInput_ch` to update their logs.
+   - It waits for their response using `AppendOutput_ch` with a timeout of 1 second (hardcoded).
+   - If it gets majority of votes, the command is added to `commit_ch`
+ - `func CommitCaller()`
+   - It takes the command from `commit_ch` and appends it to `input_ch` to execute it on the KV store.
+   - It also asks others to commit using `CommitInput_ch`.
+ - `func Evaluator()`
+   - It takes the command from `input_ch`, executes it and append the output to `output_ch`.
+ - `func DataWriter()`
+   - It finally takes the command from `output_ch` and send it to the client.
+ 
+Here are some other functions
  - `func AcceptConnection`: It accepts an incoming TCP connection request, and spawn handler `ClientListener` for that client.
+ - `func Init`: It initializes the server, i.e. define variables and channels and starts threads for different purposes.
  - `func ClientListener`: It is used to take input request from a client.
- - `func Evaluator`: It reads from the input channel `input_ch`, processes the request and sends the reply to the output channel `output_ch`.
- - `func DataWriter`: It reads from the output channel `output_ch`, and sends the output to the respective client (if required).
- - `func ConnectToServers`: It is executed to connect each server to every other server.
- - `func AcceptRPC`: Similar to `AcceptConnection`, this function accepts RPC connection request at port 9001 (leader).
- - `func Append`: This appends data in shared log.
- - `func Commit`: Runs the command and commits to the KVStore.
+ 
+Meanwhile, the leader also sends heartbeats after every `HeartbeatTimer`. This is nothing but an empty Log.
 
 # Usage
 
 In our case, running the server is somewhat a manual process.
- - Go to the `assignment2` directory
- - Set the environment variable `GOPATH` as the path to the `assignment2` directory.
+ - Go to the `assignment3` directory
+ - Set the environment variable `GOPATH` as the path to the `assignment3` directory.
  - In `program.go`, set the variable `N` to be the number of servers you are going to spawn.
- - Now spawn the servers as `go run program.go <id>`. The server with `id = 0` is the leader. Hostname and port numbers of the servers are decided based on this.
- <br/> We tried to automate this process but the program didn't work.
+ - Now spawn the servers concurrently using `go run program.go`.
  - Type `go test` to run the test cases.
- 
- 
  
