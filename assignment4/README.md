@@ -79,6 +79,6 @@ In our case, running the server is somewhat a manual process.
  - Go to the `assignment4` directory
  - Set the environment variable `GOPATH` as the path to the `assignment4` directory.
  - In `program.go`, set the variable `N` to be the number of servers you are going to spawn.
- - Now spawn the servers concurrently using `go run program.go <id>` for different `<id>`. Spawing servers with `<id>` from 0 to `N`-1 is better for using the `program_test.go` file correctly.
+ - Now spawn the servers concurrently using `go run program.go <id>` for different `<id>`. Spawing servers with `<id>` from 0 to `N-1` is better for using the `program_test.go` file correctly.
  - Type `go test` to run the test cases.
  
