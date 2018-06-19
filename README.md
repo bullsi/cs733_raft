@@ -1,7 +1,7 @@
 # Introduction
 
 This (`./assignment4`) is the complete assignment of course CS733: Advanced Distributed Computing - Engineering a Cloud. 
-The purpose of this assignment is to understand and implement the functionalities of the RAFT protocol. In this, I have implemented the process of Leader Election and Log Replication. In the previous versions of the assignment, each server was a different go routine but now it is again separate go process. Moreover, server-server interation was using channels but now an additional layer of RPC is added over that. The focus is not on the I/O but on the correctness of the implementation.
+The purpose of this assignment is to understand and implement the functionalities of [RAFT consensus algorithm](https://raft.github.io/). I have implemented the process of Leader Election and Log Replication. In the previous versions of the assignment, each server was a different go routine but now it is again separate go process. Moreover, server-server interation was using channels but now an additional layer of RPC is added over that. The focus is not on the I/O but on the correctness of the implementation.
 
 # Files
 
